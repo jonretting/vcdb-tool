@@ -1,4 +1,4 @@
-VMware Vcenter Appliance 5.5+ Postgre SQL Database Archiving tool
+VMware Vcenter Appliance 5.5+ Postgres SQL Database Archiving tool
 ==========================
 ### Capable of creating backup archives of your VC Database, and import backup archives.
 ### You can use this script to schedule backups and archive mantainence.
@@ -9,7 +9,7 @@ Copyright (c) 2015 Jon Retting
 INFO:
 -----
 - Tested on Vcenter Appliance 5.5d and 5.5e
-- Works only on an embended local Postgre Database
+- Works only on an embended local Postgres Database
 - When using the "-p" purge option a value of "30" would delete all arvhives over 30 days old
 - Edit "vcdbt_backup_dest" variable to change backup destination path
 
