@@ -1,0 +1,124 @@
+#!/bin/bash
+# Name: vcdb-tool
+# Desc: Vcenter Appliance 5.5 Postgres SQL Import/Export of VC DB.
+# Version: 0.1
+#
+# Copyright (c) 2015 Jon Retting
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# modifyable defaults
+vcdbt_backup_dest="/mnt/backups/vc_psql" # destination path for backup archives
+vcdbt_path="/opt/vmware/vpostgres/1.0/bin"   # path to postgres binaries
+vcdbt_vpx_config="/etc/vmware-vpx/embedded_db.cfg"    # path to vpx db config file
+
+# options and arguements processing
+__getOptions () {
+    __getDefaults
+    local opts="ei:p:h"
+    while getopts "$opts" vcdbt_options; do
+        case "$vcdbt_options" in
+            e)  vcdbt_run="export" ;;
+            i)
+                vcdbt_run="import"
+                vcdbt_archive="$vcdbt_backup_dest/$OPTARG"
+            ;;
+            p)  
+                vcdbt_run="purge"
+                __isNumber "$OPTARG" && { vcdbt_purge="$OPTARG"; } || { exit 1; }
+            ;;
+            h)  __printUsage; exit 0 ;;
+            *)  __printUsage; exit 1 ;;
+        esac
+    done
+}
+
+# check that arg is a number
+__isNumber () {
+    printf "$1" | grep -Eq '^[0-9]+$' && return 0
+    echo "Error: -p value must be a number"
+    return 1
+}
+
+# place to gather defaults
+__getDefaults () {
+    vcdbt_success=false
+}
+
+# help crupt
+__printUsage () {
+    echo "vcdb-tool.sh [-e export] [-i <file> import] [-p <# days to save>]"
+}
+
+# export vc db to backup destination archive
+__psqlExport () {
+    __vpxServices stop || return 1
+    vcdbt_export="$vcdbt_backup_dest/$EMB_DB_INSTANCE.$(date +%m%d%y%s).bak"
+    ${vcdbt_path}/pg_dump $EMB_DB_INSTANCE -U $EMB_DB_USER -Fp -c > "$vcdbt_export" || return 1
+    __vpxServices start || return 1
+}
+
+# import sql pased backup archive file and verifies path
+__psqlImport () {
+    __vpxServices stop || return 1
+    [ -e "$vcdbt_archive" ] || { echo "Error: locating backup archive $file"; return 1; }
+    ${vcdbt_path}/psql -d $EMB_DB_INSTANCE -Upostgres -f "$file" || return 1
+    __vpxServices start || return 1
+}
+
+# find and delete old backups
+__purgeOldBackups () {
+    find "$vcdbt_backup_dest" -mtime +${vcdbt_purge} -delete || { echo "Error removing old backups"; return 1; }
+}
+
+# manage vpxd services
+__vpxServices () {
+    local msg="Failed to $1 vpxd services"
+    case "$1" in
+         stop) service vmware-vpxd stop || { echo "$msg"; return 1; } ;;
+        start) service vmware-vpxd start || { echo "$msg"; return 1; } ;;
+    esac
+    return 0
+}
+
+# verify paths
+[ -d "$vcdbt_backup_dest" ] || { echo "Error: locating backup destination $vcdbt_backup_dest"; exit 1; }
+[ -d "$vcdbt_path" ] || { echo "Error: locating Postgres binaries $vcdbt_path"; exit 1; }
+[ -e "$vcdbt_vpx_config" ] || { echo "Error: locating vpx config file $vcdbt_vpx_config"; exit 1; }
+
+# source vpx embedded db config file
+. "$vcdbt_vpx_config"
+
+# get args and options passed from cmd
+__getOptions "$@" && shift $((OPTIND-1))
+
+# evaluate arguements (basic)
+case "$vcdbt_run" in
+    export) __psqlExport && vcdbt_success=true 
+            echo -e "New archive: $vcdbt_export\nSize: $(ls -lh $vcdbt_export | awk '{print $5}')"
+    ;;
+    import) __psqlImport && vcdbt_success=true ;;
+     purge) __purgeOldBackups && vcdbt_success=true ;;
+         *) __printUsage; exit 1 ;;
+esac
+
+# if opperation was a success startup vpxd services
+if ! $vcdbt_success; then
+    # future add logging to import/export functions
+    echo "Error: returned after ${vcdbt_run} process"
+    exit 1
+fi
+
+exit 0
