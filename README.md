@@ -6,9 +6,12 @@ Copyright (c) 2015 Jon Retting
 
 `git@github.com:jonretting/vcdb-tool.git`
 
-Version: 0.2
+Version: 0.21
 
 ### Release Notes:
+
+#### 0.21:
+- Print out the name and size of the new Invetory Backup archive after backup success
 
 #### 0.2:
 - Can backup Inventory Service Database and restore it
