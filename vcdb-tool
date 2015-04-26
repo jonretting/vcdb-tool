@@ -1,7 +1,7 @@
 #!/bin/bash
 # Name: vcdb-tool
-# Desc: Vcenter Appliance 5.5 Postgres SQL Import/Export of VC DB.
-# Version: 0.1
+# Desc: VMware Vcenter Appliance 5.5+ Database Archiving tool
+# Version: 0.2
 #
 # Copyright (c) 2015 Jon Retting
 #
@@ -20,20 +20,31 @@
 #
 
 # modifyable defaults
-vcdbt_backup_dest="/mnt/backups/vc_psql" # destination path for backup archives
+
+# Change the following to your desired backup destination path
+# Both PostGres database and Inventory Service Database archives use this folder
+vcdbt_backup_dest="/mnt/backups/vca-data" # destination path for backup archives
+
 vcdbt_path="/opt/vmware/vpostgres/1.0/bin"   # path to postgres binaries
+vcdbt_invpath="/usr/lib/vmware-vpx/inventoryservice/scripts/" # path to inventory scripts
 vcdbt_vpx_config="/etc/vmware-vpx/embedded_db.cfg"    # path to vpx db config file
 
 # options and arguements processing
 __getOptions () {
     __getDefaults
-    local opts="ei:p:h"
+    local opts="eli:br:p:h"
     while getopts "$opts" vcdbt_options; do
         case "$vcdbt_options" in
             e)  vcdbt_run="export" ;;
+            l)  vcdbt_run="list" ;;
             i)
                 vcdbt_run="import"
-                vcdbt_archive="$vcdbt_backup_dest/$OPTARG"
+                vcdbt_import="$vcdbt_backup_dest/$OPTARG"
+            ;;
+            b)  vcdbt_run="backup" ;;
+            r)
+                vcdbt_run="restore"
+                vcdbt_restore="$vcdbt_backup_dest/$OPTARG"
             ;;
             p)  
                 vcdbt_run="purge"
@@ -45,6 +56,13 @@ __getOptions () {
     done
 }
 
+# place to gather defaults
+__getDefaults () {
+    vcdbt_success=true
+    vcdbt_services="vmware-inventoryservice vmware-vpxd"
+    vcdbt_time="$(date +%m%d%y\.%s)"
+}
+
 # check that arg is a number
 __isNumber () {
     printf "$1" | grep -Eq '^[0-9]+$' && return 0
@@ -52,30 +70,47 @@ __isNumber () {
     return 1
 }
 
-# place to gather defaults
-__getDefaults () {
-    vcdbt_success=false
-}
-
 # help crupt
 __printUsage () {
-    echo "vcdb-tool.sh [-e export] [-i <file> import] [-p <# days to save>]"
+    echo "vcdb-tool [-e | -i <file>] (export or import database)"
+    echo "vcdb-tool [-b | -r <file>] (backup or restore inventory service database)"
+    echo "vcdb-tool [-p N] (prune archives older than N)"
+    echo "vcdb-tool [-l] (list contents of archive path)"
+    echo "vcdb-tool [-h] (help)"
 }
 
 # export vc db to backup destination archive
 __psqlExport () {
-    __vpxServices stop || return 1
-    vcdbt_export="$vcdbt_backup_dest/$EMB_DB_INSTANCE.$(date +%m%d%y%s).bak"
+    service vmware-vpxd stop || return 1
+    vcdbt_export="$vcdbt_backup_dest/$EMB_DB_INSTANCE.db.$vcdbt_time.bak"
     ${vcdbt_path}/pg_dump $EMB_DB_INSTANCE -U $EMB_DB_USER -Fp -c > "$vcdbt_export" || return 1
-    __vpxServices start || return 1
+    service vmware-vpxd start || return 1
 }
 
 # import sql pased backup archive file and verifies path
 __psqlImport () {
-    __vpxServices stop || return 1
-    [ -e "$vcdbt_archive" ] || { echo "Error: locating backup archive $file"; return 1; }
-    ${vcdbt_path}/psql -d $EMB_DB_INSTANCE -Upostgres -f "$file" || return 1
-    __vpxServices start || return 1
+    [ -e "$vcdbt_import" ] || { echo "Error: locating import archive $vcdbt_import"; return 1; }
+    service vmware-vpxd stop || return 1
+    ${vcdbt_path}/psql -d $EMB_DB_INSTANCE -Upostgres -f "$vcdbt_import" || return 1
+    service vmware-vpxd start || return 1
+}
+
+# backup the inventory service database
+__invBackup () {
+    service vmware-inventoryservice stop || return 1
+    cd "$vcdbt_invpath" || return 1
+    vcdbt_invbackup="$vcdbt_backup_dest/inv-backup.$vcdbt_time.bak"
+    ./backup.sh -file "$vcdbt_invbackup" || return 1
+    service vmware-inventoryservice start || return 1
+}
+
+# restore the inventory service backup
+__invRestore () {
+    [ -e "$vcdbt_restore" ] || { echo "Error: locating inventory backup $vcdbt_restore"; return 1; }
+    vmware-inventoryservice stop || return 1
+    cd "$vcdbt_invpath" || return 1
+    ./restore.sh -backup "$vcdbt_restore"
+    vmware-inventoryservice stop || return 1
 }
 
 # find and delete old backups
@@ -84,11 +119,18 @@ __purgeOldBackups () {
 }
 
 # manage vpxd services
-__vpxServices () {
-    local msg="Failed to $1 vpxd services"
+__vcdbtServices () {
     case "$1" in
-         stop) service vmware-vpxd stop || { echo "$msg"; return 1; } ;;
-        start) service vmware-vpxd start || { echo "$msg"; return 1; } ;;
+         stop) 
+            for i in $vcdbt_services; do
+                service "$i" stop || return 1
+            done
+        ;;
+        start)
+            for i in $vcdbt_services; do
+                service "$i" start || return 1
+            done
+        ;;
     esac
     return 0
 }
@@ -97,6 +139,7 @@ __vpxServices () {
 [ -d "$vcdbt_backup_dest" ] || { echo "Error: locating backup destination $vcdbt_backup_dest"; exit 1; }
 [ -d "$vcdbt_path" ] || { echo "Error: locating Postgres binaries $vcdbt_path"; exit 1; }
 [ -e "$vcdbt_vpx_config" ] || { echo "Error: locating vpx config file $vcdbt_vpx_config"; exit 1; }
+[ -d "$vcdbt_invpath" ] || { echo "Error: locating inventory services scripts path $vcdbt_invpath"; exit 1; }
 
 # source vpx embedded db config file
 . "$vcdbt_vpx_config"
@@ -106,12 +149,19 @@ __getOptions "$@" && shift $((OPTIND-1))
 
 # evaluate arguements (basic)
 case "$vcdbt_run" in
-    export) __psqlExport && vcdbt_success=true 
-            echo -e "New archive: $vcdbt_export\nSize: $(ls -lh $vcdbt_export | awk '{print $5}')"
-    ;;
-    import) __psqlImport && vcdbt_success=true ;;
-     purge) __purgeOldBackups && vcdbt_success=true ;;
-         *) __printUsage; exit 1 ;;
+     export)
+        if __psqlExport; then
+            echo -e "New PostGres archive: $vcdbt_export\nSize: $(ls -lh $vcdbt_export | awk '{print $5}')" 
+        else
+            vcdbt_success=false
+        fi
+     ;;
+     import) __psqlImport || vcdbt_success=false ;;
+     backup) __invBackup || vcdbt_success=false ;;
+    restore) __invRestore || vcdbt_success=false ;;
+       list) ls -lh "$vcdbt_backup_dest" | sort; exit 0 ;;
+      purge) __purgeOldBackups || vcdbt_success=false ;;
+          *) __printUsage; exit 1 ;;
 esac
 
 # if opperation was a success startup vpxd services
